@@ -115,6 +115,7 @@ int mm_is_valid(MM_typecode matcode);		/* too complex for a macro */
 #define MM_SKEW_STR		"skew-symmetric"
 #define MM_PATTERN_STR  "pattern"
 
+#include "mmio.c"
 
 /*  high level routines */
 
