@@ -2,10 +2,7 @@
 *   Matrix Market I/O library for ANSI C
 *
 *   See http://math.nist.gov/MatrixMarket for details.
-*
-*
 */
-
 
 #include <stdio.h>
 #include <string.h>
@@ -508,3 +505,4 @@ char  *mm_typecode_to_str(MM_typecode matcode)
     return mm_strdup(buffer);
 
 }
+

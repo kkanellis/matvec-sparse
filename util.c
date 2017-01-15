@@ -1,6 +1,8 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "util.h"
+
 /*
  * Generate a random real vector of size N with
  * elements beloning to [0, limit)

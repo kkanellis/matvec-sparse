@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "mmio-wrapper.h"
 #include "mmio.h"
 
 /* Reads a matrix from a Matrix Market file, stored in COO format */
@@ -71,12 +72,4 @@ int read_matrix (const char * filename, int **i_idx, int **j_idx, double **value
 
     return 0;
 }
-
-
-
-
-
-     
-
-    
 
