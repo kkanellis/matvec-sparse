@@ -12,7 +12,6 @@
 #include "mmio-wrapper.h"
 #include "util.h"
 
-// TODO: instead of multiple scattering, create a struct `matrix_info`
 // TODO: replace broadcast with point-to-point for x vector
 
 void mat_vec_mult(const double *values,
@@ -114,19 +113,15 @@ int main(int argc, char * argv[])
         else filename = argv[1];
         
         /* read matrix */
-        if ( read_matrix(filename, &buf_i_idx, &buf_j_idx, &buf_values, &N, &NZ) != 0) {
+        if ( read_matrix(filename, &buf_i_idx, &buf_j_idx, 
+                                    &buf_values, &N, &NZ) != 0) {
+            fprintf(stderr, "read_matrix: failed\n");
             exit(EXIT_FAILURE);
         }
 
-        debug("Read matrix!\n");
+        debug("Read matrix from '%s'!\n", filename);
         debug("[%d]: Matrix properties: N = %d, NZ = %d\n",rank, N, NZ);
-    }
 
-    /* broadcast matrix properties N, NZ */
-    MPI_Bcast(&N, 1, MPI_INT, MASTER, MPI_COMM_WORLD);
-    MPI_Bcast(&NZ,1, MPI_INT, MASTER, MPI_COMM_WORLD);
-
-    if (rank == MASTER) {
         /* allocate x, res vector */
         buf_x = (double *)malloc_or_exit( N * sizeof(double) );
         res = (double *)malloc_or_exit( N * sizeof(double) );
@@ -143,9 +138,14 @@ int main(int argc, char * argv[])
         row_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
         row_start_idx = (int *)malloc_or_exit( nprocs * sizeof(int) );
 
+        /* divide work across processes */
         partition_equal_rows(N, NZ, nprocs, buf_i_idx, nz_count, 
                                 nz_start_idx, row_count, row_start_idx);
     }
+
+    /* broadcast matrix properties N, NZ */
+    MPI_Bcast(&N, 1, MPI_INT, MASTER, MPI_COMM_WORLD);
+    MPI_Bcast(&NZ,1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
     /* scatter number of rows each process is responsible for */
     MPI_Scatter(row_count, 1, MPI_INT, &nrows, 
@@ -154,26 +154,25 @@ int main(int argc, char * argv[])
     MPI_Scatter(row_start_idx, 1, MPI_INT, &first_row, 
                 1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
+    /* scatter number of elements each process will receive */
+    MPI_Scatter(nz_count, 1, MPI_INT, &nelements, 
+                1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
     /* allocate y vector */
     y = (double *)calloc_or_exit( nrows, sizeof(double) );
     if (rank != MASTER)
         buf_x = (double *)malloc_or_exit( N * sizeof(double) );
 
-    /* broadcast x vector */
-    /* TODO: change late to Point-2-Point communication */
-    MPI_Bcast(buf_x, N, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
-
-    /* scatter number of elements each process will receive */
-    MPI_Scatter(nz_count, 1, MPI_INT, &nelements, 
-                1, MPI_INT, MASTER, MPI_COMM_WORLD);
-    
     /* allocate values, i_idx & j_idx arrays */
     i_idx = (int *)malloc_or_exit( nelements * sizeof(int) );
     j_idx = (int *)malloc_or_exit( nelements * sizeof(int) );
     values = (double *)malloc_or_exit( nelements * sizeof(double));
     
     debug("[%d] %d %d %d\n", rank, N, NZ, nelements);
+    
+    /* broadcast x vector */
+    /* TODO: change late to Point-2-Point communication */
+    MPI_Bcast(buf_x, N, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* scatter matrix elements to processes */
     MPI_Scatterv(buf_values, nz_count, nz_start_idx, 
