@@ -73,3 +73,37 @@ int read_matrix (const char * filename, int **i_idx, int **j_idx, double **value
     return 0;
 }
 
+int write_matrix (const char *filename, const int *i_idx, const int *j_idx, const double *values, int N, int NZ)
+{
+    FILE* f;
+    MM_typecode matcode;
+
+    /* open the file */
+    if ( (f = fopen(filename, "w")) == NULL ) {
+        fprintf(stderr, "Cannot open '%s'\n", filename);
+        return 1;
+    }
+
+    /* init and set proper flags for matrix */
+    mm_initialize_typecode(&matcode);
+    mm_set_matrix(&matcode);
+    mm_set_real(&matcode);
+    mm_set_sparse(&matcode);
+
+    /* write banner and matrix size info */
+    mm_write_banner(f, matcode);
+    mm_write_mtx_crd_size(f, N, N, NZ);
+
+    /* write matrix elements */
+    for (int i = 0; i < NZ; i++) {
+        fprintf(f, "%d %d %.9lf\n", i_idx[i] + 1, j_idx[i] + 1, values[i]);
+    }
+
+    /* close the file */
+    if ( fclose(f) != 0 ) {
+        fprintf(stderr, "Cannot close file (fil:'%s')\n", filename);
+    }
+
+    return 0;
+}
+

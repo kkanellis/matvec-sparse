@@ -8,6 +8,7 @@
 #define MM_IO_WRAPPER_H
 
 int read_matrix (const char * filename, int **i_idx, int **j_idx, double **values, int *N, int *NZ);
+int write_matrix (const char *filename, const int *i_idx, const int *j_idx, const double *values, int N, int NZ);
 
 #endif
 
