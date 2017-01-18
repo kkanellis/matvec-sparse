@@ -68,7 +68,8 @@ void partition_equal_nz_elements() {
 
 int main(int argc, char * argv[])
 {
-    char *filename;
+    char *in_file,
+         *out_file = NULL;
 
     double *values; /* a_values array */
     int *i_idx,     /* i_index array */
@@ -106,20 +107,24 @@ int main(int argc, char * argv[])
     /* master thread reads matrix */
     if (rank == MASTER) {
         /* read arguments */
-        if (argc != 2) {
-            printf("Usage: %s filename\n", argv[0]);
+        if (argc < 2 || argc > 3) {
+            printf("Usage: %s input_file [output_file]\n", argv[0]);
             return 0;
         }
-        else filename = argv[1];
+        else {
+            in_file = argv[1];
+            if (argc == 3) 
+                out_file = argv[2];
+        }
         
         /* read matrix */
-        if ( read_matrix(filename, &buf_i_idx, &buf_j_idx, 
+        if ( read_matrix(in_file, &buf_i_idx, &buf_j_idx, 
                                     &buf_values, &N, &NZ) != 0) {
             fprintf(stderr, "read_matrix: failed\n");
             exit(EXIT_FAILURE);
         }
 
-        debug("Read matrix from '%s'!\n", filename);
+        debug("Read matrix from '%s'!\n", in_file);
         debug("[%d]: Matrix properties: N = %d, NZ = %d\n",rank, N, NZ);
 
         /* allocate x, res vector */
@@ -200,16 +205,30 @@ int main(int argc, char * argv[])
     /* MPI: end */
     MPI_Finalize();
 
-    #ifdef DEBUG
-    if (rank == MASTER) {
-        debug("-------------------------------------\n");
-        debug("RESULT\n");
-        debug("-------------------------------------\n");
-        for (int i = 0; i < N; i++) {
-            debug("[%d] %lf\n",rank, res[i]);
+    /* write to output file */
+    if (rank == MASTER && out_file != NULL) {
+        printf("Writing result to '%s'\n", out_file);
+
+        /* open file */
+        FILE *f;
+        if ( !(f = fopen(out_file, "w")) ) {
+            fprintf(stderr, "fopen: failed to open file '%s'", out_file);
+            exit(EXIT_FAILURE);
         }
+
+        /* write result */
+        for (int i = 0; i < N; i++) {
+            fprintf(f, "%.8lf\n",rank, res[i]);
+        }
+        
+        /* close file */
+        if ( fclose(f) != 0) {
+            fprintf(stderr, "fopen: failed to open file '%s'", out_file);
+            exit(EXIT_FAILURE);
+        }
+
+        printf("Done!\n");
     }
-    #endif
 
     /* free the memory */
     free(values);
