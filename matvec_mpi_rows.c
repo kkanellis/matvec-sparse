@@ -28,10 +28,11 @@ MPI_Datatype proc_info_type;
 double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
                             int *i_idx, int *j_idx, double *values, double *x)
 {
-    proc_info_t proc_info;
-    double *res;
+    proc_info_t proc_info;  /* info about submatrix; different per process */
+    double *res;            /* result of multiplication res = A*x */
 
-    int *count, *offset;
+    /***** MPI MASTER (root) process only ******/
+    int *count, *offset;    /* auxilliary arrays used for Scatterv/Gatherv */
 
     /* scatter to processors all info that will be needed */
     MPI_Scatter(all_proc_info, 1, proc_info_type, &proc_info,
@@ -49,7 +50,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         res = (double *)malloc_or_exit( proc_info.N * sizeof(double) );
     }
 
-    debug("[%d] %d %d %d\n", rank, proc_info.N, proc_info.NZ, proc_info.nz_count);
+    //debug("[%d] %d %d %d\n", rank, proc_info.N, proc_info.NZ, proc_info.nz_count);
     
     /* broadcast x vector */
     /* TODO: change late to Point-2-Point communication */
@@ -72,9 +73,9 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
                     proc_info.nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* validation check */
-    for (int i = 0; i < proc_info.nz_count; i++) {
+    /*for (int i = 0; i < proc_info.nz_count; i++) {
         debug("[%d] %d %d %lf\n", rank, i_idx[i], j_idx[i], values[i]);
-    }
+    }*/
 
     /* multiplication kernel */
     for (int k = 0 ; k < proc_info.nz_count; k++) {
@@ -92,7 +93,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     MPI_Gatherv(y, proc_info.row_count, MPI_DOUBLE, res, count, 
                 offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
-    /* return the result of multiplication */
+    /* return final result */
     return res;
 }
 
@@ -120,10 +121,15 @@ void partition_equal_rows(proc_info_t *proc_info, int nprocs, const int *row_idx
             i++;
         }
 
-        debug("[%d] row\t %d %d\n", k, proc_info[k].row_count, 
-                                        proc_info[k].row_start_idx);
-        debug("[%d] nz\t %d %d\n", k, proc_info[k].nz_count, 
-                                        proc_info[k].nz_start_idx);
+        debug("[%d] Processor %d takes rows %3d till %3d [%3d] (entries %6d till %6d) [%6d]\n", 
+                        MASTER, k, 
+                        proc_info[k].row_start_idx, 
+                        proc_info[k].row_start_idx + proc_info[k].row_count,
+                        proc_info[k].row_count,
+                        proc_info[k].nz_start_idx, 
+                        proc_info[k].nz_start_idx + proc_info[k].nz_count,
+                        proc_info[k].nz_count
+            );
     }
     /* add remaining elements (if any) to last task */
     proc_info[nprocs - 1].nz_count += proc_info[0].NZ - i;  
@@ -230,6 +236,7 @@ int main(int argc, char * argv[])
 
         /* divide work across processes */
         partition_equal_rows(proc_info, nprocs, buf_i_idx);
+        debug("Starting algorithm...\n");
     }
 
     res = mat_vec_mult_parallel(rank, nprocs, proc_info, buf_i_idx, 
@@ -240,6 +247,7 @@ int main(int argc, char * argv[])
 
     /* write to output file */
     if (rank == MASTER) {
+        debug("Finished!\n");
         if (out_file != NULL) {
             printf("Writing result to '%s'\n", out_file);
 
