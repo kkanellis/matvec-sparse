@@ -4,6 +4,8 @@
 
 #include "mpi.h"
 
+enum policies { EQUAL_ROWS, EQUAL_NZ };
+enum policies policy = EQUAL_NZ;
 
 #define DEBUG
 #define MAX_RANDOM_NUM (1<<20)
@@ -283,16 +285,14 @@ int main(int argc, char * argv[])
             exit(EXIT_FAILURE);
         }
 
-        debug("Read matrix from '%s'!\n", in_file);
-        debug("[%d]: Matrix properties: N = %d, NZ = %d\n",rank, 
+        debug("[%d] Read matrix from '%s'!\n", rank, in_file);
+        debug("[%d] Matrix properties: N = %d, NZ = %d\n\n",rank, 
                                     proc_info[MASTER].N, proc_info[MASTER].NZ);
 
         /* initialize process info */
         for (int p = 0; p < nprocs; p++) {
             if (p != MASTER) {
                 proc_info[p] = proc_info[MASTER];
-
-                debug("[%d] %d\n", p, proc_info[p].N);
             }
         }
 
@@ -307,12 +307,23 @@ int main(int argc, char * argv[])
         }
 
         /* divide work across processes */
-        //partition_equal_rows(proc_info, nprocs, buf_i_idx);
-        partition_equal_nz_elements(proc_info, nprocs, buf_i_idx);
+        if (policy == EQUAL_ROWS) {
+            debug("[%d] Policy: Equal number of ROWS\n", rank);
+            partition_equal_rows(proc_info, nprocs, buf_i_idx);
+        }
+        else if (policy == EQUAL_NZ) {
+            debug("[%d] Policy: Equal number of NZ ENTRIES\n", rank);
+            partition_equal_nz_elements(proc_info, nprocs, buf_i_idx);
+        }
+        else {
+            fprintf(stderr, "Wrong policy defined...");
+            exit(EXIT_FAILURE);
+        }
 
-        debug("Starting algorithm...\n");
+        debug("\n[%d] Starting algorithm...\n", rank);
     }
 
+    /* Matrix-vector multiplication for each processes */
     res = mat_vec_mult_parallel(rank, nprocs, proc_info, buf_i_idx, 
                                 buf_j_idx, buf_values, buf_x);
     
@@ -356,3 +367,4 @@ int main(int argc, char * argv[])
         
     return 0;
 }
+
