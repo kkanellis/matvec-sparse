@@ -8,7 +8,7 @@ MPI_C = mpicc
 MPI_CFLAGS = #--showme:compiler
 
 # Object files from libraries
-OBJ = mmio.o mmio-wrapper.o util.o
+OBJ = mmio.o mmio-wrapper.o policy.o util.o
 
 all: matvec_seq matvec_mpi_rows
 
