@@ -112,6 +112,8 @@ int main(int argc, char * argv[])
     char *in_file,
          *out_file = NULL;
 
+    double t, comp_time, partition_time;
+
     double *x; /* vector to be multiplied */
 
     int nprocs,     /* number of tasks/processes */
@@ -180,6 +182,7 @@ int main(int argc, char * argv[])
         }
 
         /* divide work across processes */
+        t = MPI_Wtime();
         if (policy == EQUAL_ROWS) {
             debug("[%d] Policy: Equal number of ROWS\n", rank);
             partition_equal_rows(proc_info, nprocs, buf_i_idx);
@@ -192,19 +195,23 @@ int main(int argc, char * argv[])
             fprintf(stderr, "Wrong policy defined...");
             exit(EXIT_FAILURE);
         }
+        partition_time = (MPI_Wtime() - t) * 1000.0;
 
-        debug("\n[%d] Starting algorithm...\n", rank);
+        debug("[%d] Partition time: %10.3lf ms\n\n", rank, partition_time);
+        debug("[%d] Starting algorithm...\n", rank);
+        t = MPI_Wtime();
     }
 
     /* Matrix-vector multiplication for each processes */
     res = mat_vec_mult_parallel(rank, nprocs, proc_info, buf_i_idx, 
                                 buf_j_idx, buf_values, buf_x);
-    
-    /* MPI: end */
-    MPI_Finalize();
 
     /* write to output file */
     if (rank == MASTER) {
+        comp_time = (MPI_Wtime() - t) * 1000.0; 
+        printf("[%d] Computation time: %10.3lf ms\n\n", rank, comp_time);
+
+        printf("[%d] Total execution time: %10.3lf ms\n", rank, comp_time + partition_time);
         debug("Finished!\n");
         if (out_file != NULL) {
             printf("Writing result to '%s'\n", out_file);
@@ -237,6 +244,10 @@ int main(int argc, char * argv[])
         free(buf_x);
         free(res);
     }
+
+    /* MPI: end */
+    MPI_Finalize();
+
         
     return 0;
 }
