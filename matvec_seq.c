@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define DEBUG
 #define MAX_RANDOM_NUM (1<<20)
 
 #include "mmio-wrapper.h"

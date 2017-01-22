@@ -1,11 +1,11 @@
 # C compiler 
 CC = gcc
-CFLAGS = -O2 -g
+CFLAGS = -O2 -g -DDEBUG
 LDFLAGS = -lm
 
 # MPI compiler wrapper
 MPI_C = mpicc
-MPI_CFLAGS = #--showme:compiler
+MPI_CFLAGS = -DDEBUG #--showme:compiler
 
 # Object files from libraries
 OBJ = mmio.o mmio-wrapper.o policy.o util.o

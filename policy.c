@@ -26,8 +26,8 @@ void partition_equal_rows(proc_info_t *proc_info, int nprocs, const int *row_idx
             i++;
         }
 
-        debug("[%d] Processor %d takes rows %3d till %3d [%3d] (entries %6d till %6d) [%6d]\n", 
-                        MASTER, k, 
+        debug("Processor %d takes rows %3d till %3d [%3d] (entries %6d till %6d) [%6d]\n", 
+                        k, 
                         proc_info[k].row_start_idx, 
                         proc_info[k].row_start_idx + proc_info[k].row_count - 1,
                         proc_info[k].row_count,
@@ -105,8 +105,8 @@ void partition_equal_nz_elements(proc_info_t *proc_info, int nprocs, const int *
     }
     
     for (int k = 0; k < nprocs; k++) {
-        debug("[%d] Processor %d takes rows %3d till %3d [%3d] (entries %6d till %6d) [%6d]\n", 
-                        MASTER, k, 
+        debug("Processor %d takes rows %3d till %3d [%3d] (entries %6d till %6d) [%6d]\n", 
+                        k, 
                         proc_info[k].row_start_idx, 
                         proc_info[k].row_start_idx + proc_info[k].row_count - 1,
                         proc_info[k].row_count,

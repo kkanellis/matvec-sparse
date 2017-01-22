@@ -4,7 +4,6 @@
 
 #include "mpi.h"
 
-#define DEBUG
 #define MAX_RANDOM_NUM (1<<20)
 #define MASTER 0
 #define EPSILON 1e-9
