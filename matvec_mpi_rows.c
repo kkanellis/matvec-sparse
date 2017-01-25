@@ -21,69 +21,76 @@ MPI_Datatype proc_info_type;
 double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
                             int *i_idx, int *j_idx, double *values, double *x)
 {
-    proc_info_t proc_info;  /* info about submatrix; different per process */
+    proc_info_t *proc_info; /* info about submatrix; different per process */
     double *res;            /* result of multiplication res = A*x */
 
     /***** MPI MASTER (root) process only ******/
     int *count, *offset;    /* auxilliary arrays used for Scatterv/Gatherv */
 
     /* scatter to processors all info that will be needed */
-    MPI_Scatter(all_proc_info, 1, proc_info_type, &proc_info,
-                    1, proc_info_type, MASTER, MPI_COMM_WORLD);
+    if (rank == MASTER)
+        proc_info = all_proc_info;
+    else
+        proc_info = (proc_info_t *)malloc( nprocs * sizeof(proc_info_t) );
+
+    MPI_Bcast(proc_info, nprocs, proc_info_type, MASTER, MPI_COMM_WORLD);
+    //MPI_Scatter(all_proc_info, 1, proc_info[rank]_type, &proc_info[rank],
+    //              1, proc_info[rank]_type, MASTER, MPI_COMM_WORLD);
 
     /* allocate memory for vectors and submatrixes */
-    double *y = (double *)calloc_or_exit( proc_info.row_count, sizeof(double) );
+    double *y = (double *)calloc_or_exit( proc_info[rank].row_count, sizeof(double) );
     if (rank != MASTER) {
-        x = (double *)malloc_or_exit( proc_info.N * sizeof(double) );
-        i_idx = (int *)malloc_or_exit( proc_info.nz_count * sizeof(int) );
-        j_idx = (int *)malloc_or_exit( proc_info.nz_count * sizeof(int) );
-        values = (double *)malloc_or_exit( proc_info.nz_count * sizeof(double) );
+        x = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
+        i_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
+        j_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
+        values = (double *)malloc_or_exit( proc_info[rank].nz_count * sizeof(double) );
     }
     else {
-        res = (double *)malloc_or_exit( proc_info.N * sizeof(double) );
+        res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
     }
 
-    //debug("[%d] %d %d %d\n", rank, proc_info.N, proc_info.NZ, proc_info.nz_count);
+    //debug("[%d] %d %d %d\n", rank, proc_info[rank].N, proc_info[rank].NZ, proc_info[rank].nz_count);
     
     /* broadcast x vector */
     /* TODO: change late to Point-2-Point communication */
-    MPI_Bcast(x, proc_info.N, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+    MPI_Bcast(x, proc_info[rank].N, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* scatter matrix elements to processes */
     if (rank == MASTER) {
         count = (int *)malloc_or_exit( nprocs * sizeof(int) );
         offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
         for (int p = 0; p < nprocs; p++) {
-            count[p] = all_proc_info[p].nz_count;
-            offset[p] = all_proc_info[p].nz_start_idx;
+            count[p] = proc_info[p].nz_count;
+            offset[p] = proc_info[p].nz_start_idx;
         }
     }
     MPI_Scatterv(i_idx, count, offset, MPI_INT, i_idx, 
-                    proc_info.nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
+                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
     MPI_Scatterv(j_idx, count, offset, MPI_INT, j_idx, 
-                    proc_info.nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
+                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
     MPI_Scatterv(values, count, offset, MPI_DOUBLE, values, 
-                    proc_info.nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+                    proc_info[rank].nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* validation check */
-    /*for (int i = 0; i < proc_info.nz_count; i++) {
+    /*for (int i = 0; i < proc_info[rank].nz_count; i++) {
         debug("[%d] %d %d %lf\n", rank, i_idx[i], j_idx[i], values[i]);
     }*/
 
+    
     /* multiplication kernel */
-    for (int k = 0 ; k < proc_info.nz_count; k++) {
-        y[ i_idx[k] - proc_info.row_start_idx ] += values[k] * x[ j_idx[k] ];
+    for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
+        y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
     }
 
     /* gather y elements from processes and save it to res */
     if (rank == MASTER) {
-        res = (double *)malloc_or_exit( proc_info.N * sizeof(double) );
+        res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
         for (int p = 0; p < nprocs; p++) {
-            count[p] = all_proc_info[p].row_count;
-            offset[p] = all_proc_info[p].row_start_idx;
+            count[p] = proc_info[p].row_count;
+            offset[p] = proc_info[p].row_start_idx;
         }
     }
-    MPI_Gatherv(y, proc_info.row_count, MPI_DOUBLE, res, count, 
+    MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, count, 
                 offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* return final result */
@@ -181,8 +188,9 @@ int main(int argc, char * argv[])
             buf_x[i] = 1;
         }
 
-        /* divide work across processes */
         t = MPI_Wtime();
+        
+        /* divide work across processes */
         if (policy == EQUAL_ROWS) {
             debug("[%d] Policy: Equal number of ROWS\n", rank);
             partition_equal_rows(proc_info, nprocs, buf_i_idx);
@@ -195,6 +203,7 @@ int main(int argc, char * argv[])
             fprintf(stderr, "Wrong policy defined...");
             exit(EXIT_FAILURE);
         }
+        
         partition_time = (MPI_Wtime() - t) * 1000.0;
 
         debug("[%d] Partition time: %10.3lf ms\n\n", rank, partition_time);
