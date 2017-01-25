@@ -15,35 +15,35 @@
 #include "util.h"
 #include "policy.h"
 
-// TODO: replace broadcast with point-to-point for x vector
+// TODO: replace N sized x vector with rows_count one - need to change global element positions
+// TODO: optimizations - overlap communication with memory allocations & computations
 
 enum policies policy = EQUAL_NZ;
 MPI_Datatype proc_info_type;
 
-
 enum tag { REQUEST_TAG, REPLY_TAG };
 
 double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
-                            int *i_idx, int *j_idx, double *values, double *x)
+                            int *i_idx, int *j_idx, double *values, double *buf_x)
 {
     proc_info_t *proc_info; /* info about submatrix; different per process */
     double *res;            /* result of multiplication res = A*x */
 
     /***** MPI MASTER (root) process only ******/
-    int *count, *offset;    /* auxilliary arrays used for Scatterv/Gatherv */
+    int *nz_count, *nz_offset,    /* auxilliary arrays used for Scatterv/Gatherv */
+        *row_count, *row_offset;
 
     /* scatter to processors all info that will be needed */
     if (rank == MASTER)
         proc_info = all_proc_info;
     else
         proc_info = (proc_info_t *)malloc( nprocs * sizeof(proc_info_t) );
-
     MPI_Bcast(proc_info, nprocs, proc_info_type, MASTER, MPI_COMM_WORLD);
 
     /* allocate memory for vectors and submatrixes */
     double *y = (double *)calloc_or_exit( proc_info[rank].row_count, sizeof(double) );
+    double *x = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
     if (rank != MASTER) {
-        x = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
         i_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
         j_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
         values = (double *)malloc_or_exit( proc_info[rank].nz_count * sizeof(double) );
@@ -51,27 +51,34 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     else {
         res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
     }
-
     //debug("[%d] %d %d %d\n", rank, proc_info[rank].N, proc_info[rank].NZ, proc_info[rank].nz_count);
     
-    /* broadcast x vector */
-    /* TODO: change late to Point-2-Point communication */
-    MPI_Bcast(x, proc_info[rank].N, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+    /* scatter x vector to processes */
+    if (rank == MASTER) { 
+        row_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        row_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        for (int p = 0; p < nprocs; p++) {
+            row_count[p] = proc_info[p].row_count;
+            row_offset[p] = proc_info[p].row_start_idx;
+        }
+    }
+    MPI_Scatterv(buf_x, row_count, row_offset, MPI_DOUBLE, &x[ proc_info[rank].row_start_idx ], 
+                proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* scatter matrix elements to processes */
     if (rank == MASTER) {
-        count = (int *)malloc_or_exit( nprocs * sizeof(int) );
-        offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        nz_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        nz_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
         for (int p = 0; p < nprocs; p++) {
-            count[p] = proc_info[p].nz_count;
-            offset[p] = proc_info[p].nz_start_idx;
+            nz_count[p] = proc_info[p].nz_count;
+            nz_offset[p] = proc_info[p].nz_start_idx;
         }
     }
-    MPI_Scatterv(i_idx, count, offset, MPI_INT, i_idx, 
+    MPI_Scatterv(i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
-    MPI_Scatterv(j_idx, count, offset, MPI_INT, j_idx, 
+    MPI_Scatterv(j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
-    MPI_Scatterv(values, count, offset, MPI_DOUBLE, values, 
+    MPI_Scatterv(values, nz_count, nz_offset, MPI_DOUBLE, values, 
                     proc_info[rank].nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* validation check */
@@ -100,6 +107,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         sent[col] = 1;   /* mark the element */
 
         /* search which process has the element */
+        /* TODO: maybe replace with binary search */
         int dest = -1;
         for (int p = 0; p < nprocs; p++) {
             if ( in_range(col, proc_info[p].row_start_idx, proc_info[p].row_count) ) {
@@ -119,16 +127,13 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         to_send[ dest ]++;
         sendreqs_count++; 
     }
-
     printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
 
     /* notify the processes about the number of requests they should expect */
     MPI_Allreduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
-    /* wait for all send requests to finish */
-    //MPI_Waitall(sendreqs_count, send_reqs, MPI_STATUSES_IGNORE);
-
     /* reply to requests */
+    /* TODO: merge code below loop for overlapping comp with comm */
     MPI_Status status;
     for (int i = 0; i < to_send[rank]; i++) {
         /* receive and reply with x[ col ] value */
@@ -148,6 +153,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* Global elements multiplication */ 
+    /* TODO: replace Waitall with bare Waits */
     MPI_Waitall(sendreqs_count, recv_reqs, MPI_STATUSES_IGNORE);
     printf("[%d] All requests received!\n", rank);
 
@@ -159,15 +165,8 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* gather y elements from processes and save it to res */
-    if (rank == MASTER) {
-        res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
-        for (int p = 0; p < nprocs; p++) {
-            count[p] = proc_info[p].row_count;
-            offset[p] = proc_info[p].row_start_idx;
-        }
-    }
-    MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, count, 
-                offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+    MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, row_count, 
+                row_offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* return final result */
     return res;
