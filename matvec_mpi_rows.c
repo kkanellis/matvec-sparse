@@ -1,3 +1,4 @@
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -18,6 +19,8 @@ enum policies policy = EQUAL_NZ;
 MPI_Datatype proc_info_type;
 
 
+enum tag { REQUEST_TAG, REPLY_TAG };
+
 double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
                             int *i_idx, int *j_idx, double *values, double *x)
 {
@@ -34,8 +37,6 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         proc_info = (proc_info_t *)malloc( nprocs * sizeof(proc_info_t) );
 
     MPI_Bcast(proc_info, nprocs, proc_info_type, MASTER, MPI_COMM_WORLD);
-    //MPI_Scatter(all_proc_info, 1, proc_info[rank]_type, &proc_info[rank],
-    //              1, proc_info[rank]_type, MASTER, MPI_COMM_WORLD);
 
     /* allocate memory for vectors and submatrixes */
     double *y = (double *)calloc_or_exit( proc_info[rank].row_count, sizeof(double) );
@@ -76,7 +77,42 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         debug("[%d] %d %d %lf\n", rank, i_idx[i], j_idx[i], values[i]);
     }*/
 
-    
+    /* send requests for x elements that are needed and belong to other processes */
+    char *sent = (char *)calloc_or_exit( proc_info[rank].N, sizeof(char) );
+    MPI_Request *reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
+    MPI_Status *stats = (MPI_Status *)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Status) );
+    int req_count = 0;
+
+    for (int i = proc_info[rank].nz_start_idx; i < proc_info[rank].nz_start_idx + proc_info[rank].nz_count; i++) {
+        int col = j_idx[i - proc_info[rank].nz_start_idx];
+
+        /* check whether I have the element */
+        if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) )
+            continue;
+
+        /* check if I already sent a request for the same element */
+        if ( sent[col] )
+            continue;
+
+        sent[col] = 1;   /* mark the element */
+
+        /* search which process has the element */
+        int dest = -1;
+        for (int p = 0; p < nprocs; p++) {
+            if ( in_range(col, proc_info[p].row_start_idx, proc_info[p].row_count) ) {
+                dest = p;
+                break;
+            }
+        }
+        assert( dest >= 0 );
+        
+        /* send the request */
+        debug("[%d] Sending request for x vector element %4d to %2d\n", rank, col, dest);
+
+        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &reqs[req_count]);
+        req_count++; 
+    }
+
     /* multiplication kernel */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
         y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
