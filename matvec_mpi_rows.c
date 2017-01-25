@@ -79,12 +79,13 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
 
     /* send requests for x elements that are needed and belong to other processes */
     char *sent = (char *)calloc_or_exit( proc_info[rank].N, sizeof(char) );
-    MPI_Request *reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
-    MPI_Status *stats = (MPI_Status *)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Status) );
+    MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
+    MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
+
     int req_count = 0;
 
-    for (int i = proc_info[rank].nz_start_idx; i < proc_info[rank].nz_start_idx + proc_info[rank].nz_count; i++) {
-        int col = j_idx[i - proc_info[rank].nz_start_idx];
+    for (int i = 0; i < proc_info[rank].nz_count; i++) {
+        int col = j_idx[i];
 
         /* check whether I have the element */
         if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) )
@@ -107,13 +108,38 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         assert( dest >= 0 );
         
         /* send the request */
-        debug("[%d] Sending request for x vector element %4d to %2d\n", rank, col, dest);
+        debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
+        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &send_reqs[req_count]);
+        
+        /* recv the message (when it comes) */
+        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, MPI_COMM_WORLD, &recv_reqs[req_count]);
 
-        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &reqs[req_count]);
         req_count++; 
     }
 
-    /* multiplication kernel */
+    /* wait for all send requests to finish */
+    MPI_Waitall(req_count, send_reqs, MPI_STATUSES_IGNORE);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    /* serve requests */
+    int unread_msg, col;
+    MPI_Status status;
+
+    while( 1 ) {
+        /* check for available message */
+        MPI_Iprobe(MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &unread_msg, MPI_STATUS_IGNORE);
+        if ( !unread_msg )
+            break;
+
+        MPI_Recv(&col, 1, MPI_INT, MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
+        debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
+
+        /* send x[col] element */
+        MPI_Isend(&x[col], 1, MPI_DOUBLE, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD, &send_reqs[0]);
+    }
+
+
+    /* perform mutliplication */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
         y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
     }
