@@ -5,6 +5,8 @@
 
 #include "mpi.h"
 
+#undef DEBUG
+
 #define MAX_RANDOM_NUM (1<<20)
 #define MASTER 0
 #define EPSILON 1e-9
@@ -78,14 +80,14 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }*/
 
     /* send requests for x elements that are needed and belong to other processes */
+    int * to_send = (int *)calloc( nprocs, sizeof(int) );
     char *sent = (char *)calloc_or_exit( proc_info[rank].N, sizeof(char) );
     MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
     MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
 
-    int req_count = 0;
-
+    int col, sendreqs_count= 0;
     for (int i = 0; i < proc_info[rank].nz_count; i++) {
-        int col = j_idx[i];
+        col = j_idx[i];
 
         /* check whether I have the element */
         if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) )
@@ -109,39 +111,51 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         
         /* send the request */
         debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
-        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &send_reqs[req_count]);
+        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &send_reqs[sendreqs_count]);
         
         /* recv the message (when it comes) */
-        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, MPI_COMM_WORLD, &recv_reqs[req_count]);
-
-        req_count++; 
+        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, MPI_COMM_WORLD, &recv_reqs[sendreqs_count]);
+    
+        to_send[ dest ]++;
+        sendreqs_count++; 
     }
+
+    printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
+
+    /* notify the processes about the number of requests they should expect */
+    MPI_Allreduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 
     /* wait for all send requests to finish */
-    MPI_Waitall(req_count, send_reqs, MPI_STATUSES_IGNORE);
-    MPI_Barrier(MPI_COMM_WORLD);
+    //MPI_Waitall(sendreqs_count, send_reqs, MPI_STATUSES_IGNORE);
 
-    /* serve requests */
-    int unread_msg, col;
+    /* reply to requests */
     MPI_Status status;
-
-    while( 1 ) {
-        /* check for available message */
-        MPI_Iprobe(MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &unread_msg, MPI_STATUS_IGNORE);
-        if ( !unread_msg )
-            break;
-
+    for (int i = 0; i < to_send[rank]; i++) {
+        /* receive and reply with x[ col ] value */
         MPI_Recv(&col, 1, MPI_INT, MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
-        debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
-
-        /* send x[col] element */
         MPI_Isend(&x[col], 1, MPI_DOUBLE, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD, &send_reqs[0]);
+
+        debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
     }
 
+    printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
 
-    /* perform mutliplication */
+    /* Local elements multiplication */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
-        y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
+        if ( in_range( j_idx[k], proc_info[rank].row_start_idx, proc_info[rank].row_count) ) {
+            y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
+        }
+    }
+
+    /* Global elements multiplication */ 
+    MPI_Waitall(sendreqs_count, recv_reqs, MPI_STATUSES_IGNORE);
+    printf("[%d] All requests received!\n", rank);
+
+    int r = 0; /* recv_reqs idx */
+    for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
+        if ( !in_range( j_idx[k], proc_info[rank].row_start_idx, proc_info[rank].row_count) ) {
+            y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
+        }
     }
 
     /* gather y elements from processes and save it to res */
