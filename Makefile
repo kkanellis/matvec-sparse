@@ -12,8 +12,8 @@ OBJ = mmio.o mmio-wrapper.o policy.o util.o
 
 all: matvec_seq matvec_mpi_rows
 
-matvec_seq: matvec_seq.c $(OBJ)
-	$(CC) $(CFLAGS) $(OBJ) $< -o $@ $(LDFLAGS)
+matvec_seq: matvec_seq.c $(OBJ) stopwatch.o
+	$(CC) $(CFLAGS) $(OBJ) stopwatch.o $< -o $@ $(LDFLAGS)
 
 matvec_mpi_rows: matvec_mpi_rows.c $(OBJ)
 	$(MPI_C) $(MPI_CFLAGS) $(OBJ) $< -o $@ $(LDFLAGS)

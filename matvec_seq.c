@@ -4,6 +4,7 @@
 #define MAX_RANDOM_NUM (1<<20)
 
 #include "mmio-wrapper.h"
+#include "stopwatch.h"
 #include "util.h"
 
 void mat_vec_mult(const double *values,
@@ -29,6 +30,7 @@ int main(int argc, char * argv[])
         *j_idx;     /* j_index array */
 
     double *x, *y;  /* Ax = y */
+    double comp_time = 0;
     int N, NZ;
 
     /* read arguments */
@@ -64,7 +66,11 @@ int main(int argc, char * argv[])
     }
     
     /* perform the multiplication */
+    __sw_start(0);
     mat_vec_mult(values, i_idx, j_idx, x, y, NZ);
+    __sw_stop(0, &comp_time);
+
+    printf("Total execution time: %10.3lf ms\n", comp_time);
 
     if (out_file != NULL) {
         printf("Writing result to '%s'\n", out_file);
