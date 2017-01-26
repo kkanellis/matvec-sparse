@@ -119,10 +119,12 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         
         /* send the request */
         debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
-        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , MPI_COMM_WORLD, &send_reqs[sendreqs_count]);
+        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , 
+                    MPI_COMM_WORLD, &send_reqs[sendreqs_count]);
         
         /* recv the message (when it comes) */
-        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, MPI_COMM_WORLD, &recv_reqs[sendreqs_count]);
+        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, 
+                    MPI_COMM_WORLD, &recv_reqs[sendreqs_count]);
     
         to_send[ dest ]++;
         sendreqs_count++; 
@@ -142,7 +144,6 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
 
         debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
     }
-
     printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
 
     /* Local elements multiplication */
@@ -165,6 +166,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* gather y elements from processes and save it to res */
+    printf("[%d] Gathering results...\n", rank);
     MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, row_count, 
                 row_offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
