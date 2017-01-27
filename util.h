@@ -25,4 +25,6 @@ void random_vec(double *v, int N, int limit);
 void * malloc_or_exit(size_t size);
 void * calloc_or_exit(size_t nmemb, size_t size);
 
+char in_range(int num, int start, int count);
+
 #endif
