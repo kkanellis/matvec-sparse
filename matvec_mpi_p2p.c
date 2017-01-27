@@ -53,59 +53,57 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
     //debug("[%d] %d %d %d\n", rank, proc_info[rank].N, proc_info[rank].NZ, proc_info[rank].nz_count);
     
-    /* scatter x vector to processes */
     if (rank == MASTER) { 
         row_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
         row_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        nz_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
+        nz_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
+
         for (int p = 0; p < nprocs; p++) {
             row_count[p] = proc_info[p].row_count;
             row_offset[p] = proc_info[p].row_start_idx;
-        }
-    }
-    MPI_Scatterv(buf_x, row_count, row_offset, MPI_DOUBLE, &x[ proc_info[rank].row_start_idx ], 
-                proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
-
-    /* scatter matrix elements to processes */
-    if (rank == MASTER) {
-        nz_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
-        nz_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
-        for (int p = 0; p < nprocs; p++) {
             nz_count[p] = proc_info[p].nz_count;
             nz_offset[p] = proc_info[p].nz_start_idx;
         }
     }
-    MPI_Scatterv(i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
-                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
+    /* scatter x vector to processes */
+    MPI_Scatterv(buf_x, row_count, row_offset, MPI_DOUBLE, &x[ proc_info[rank].row_start_idx ], 
+                proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+
+    /* scatter matrix elements to processes */
     MPI_Scatterv(j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
-    MPI_Scatterv(values, nz_count, nz_offset, MPI_DOUBLE, values, 
-                    proc_info[rank].nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
-
-    /* validation check */
-    /*for (int i = 0; i < proc_info[rank].nz_count; i++) {
-        debug("[%d] %d %d %lf\n", rank, i_idx[i], j_idx[i], values[i]);
-    }*/
-
+    
     /* send requests for x elements that are needed and belong to other processes */
-    int * to_send = (int *)calloc( nprocs, sizeof(int) );
-    char *sent = (char *)calloc_or_exit( proc_info[rank].N, sizeof(char) );
-    MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
-    MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( proc_info[rank].NZ * sizeof(MPI_Request) );
+    int *req_cols = (int *)malloc_or_exit( proc_info[rank].N * sizeof(int) );
+    int *map = (int *)malloc_or_exit( proc_info[rank].N * sizeof(int) );
+    for (int i = 0; i < proc_info[rank].N; i++)  map[i] = -1;
 
-    int col, sendreqs_count= 0;
+    int col, sendreqs_count = 0;
     for (int i = 0; i < proc_info[rank].nz_count; i++) {
         col = j_idx[i];
 
         /* check whether I have the element */
-        if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) )
+        if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) ) 
             continue;
 
-        /* check if I already sent a request for the same element */
-        if ( sent[col] )
+        /* check if already request this element */
+        if ( map[col] > 0 )
             continue;
+            
+        /* create new request */
+        map[ col ] = sendreqs_count;
+        req_cols[ sendreqs_count ] = col;
+        sendreqs_count++;
+    }
 
-        sent[col] = 1;   /* mark the element */
+    int * to_send = (int *)calloc( nprocs, sizeof(int) );
+    MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( sendreqs_count * sizeof(MPI_Request) );
+    MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( sendreqs_count * sizeof(MPI_Request) );
 
+    for (int i = 0; i < sendreqs_count; i++) {
+        col = req_cols[i];
+        
         /* search which process has the element */
         /* TODO: maybe replace with binary search */
         int dest = -1;
@@ -116,18 +114,15 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
             }
         }
         assert( dest >= 0 );
+        to_send[dest]++;
+        debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
         
         /* send the request */
-        debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
-        MPI_Isend(&col, 1, MPI_INT, dest, REQUEST_TAG , 
-                    MPI_COMM_WORLD, &send_reqs[sendreqs_count]);
-        
+        MPI_Isend(&req_cols[i], 1, MPI_INT, dest, REQUEST_TAG, 
+                    MPI_COMM_WORLD, &send_reqs[i]);
         /* recv the message (when it comes) */
         MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, 
-                    MPI_COMM_WORLD, &recv_reqs[sendreqs_count]);
-    
-        to_send[ dest ]++;
-        sendreqs_count++; 
+                    MPI_COMM_WORLD, &recv_reqs[i]);
     }
     //printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
 
@@ -145,6 +140,12 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
     }
     //printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
+    
+    /* scatter j_idx & values to processes */
+    MPI_Scatterv(i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
+                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
+    MPI_Scatterv(values, nz_count, nz_offset, MPI_DOUBLE, values, 
+                    proc_info[rank].nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* Local elements multiplication */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
@@ -154,13 +155,10 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* Global elements multiplication */ 
-    /* TODO: replace Waitall with bare Waits */
-    MPI_Waitall(sendreqs_count, recv_reqs, MPI_STATUSES_IGNORE);
-    //printf("[%d] All requests received!\n", rank);
-
     int r = 0; /* recv_reqs idx */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
         if ( !in_range( j_idx[k], proc_info[rank].row_start_idx, proc_info[rank].row_count) ) {
+            MPI_Wait(&recv_reqs[ map[ j_idx[k] ] ], MPI_STATUS_IGNORE);
             y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
         }
     }
