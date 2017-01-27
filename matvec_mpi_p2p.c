@@ -129,7 +129,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         to_send[ dest ]++;
         sendreqs_count++; 
     }
-    printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
+    //printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
 
     /* notify the processes about the number of requests they should expect */
     MPI_Allreduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
@@ -144,7 +144,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
 
         debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
     }
-    printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
+    //printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
 
     /* Local elements multiplication */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
@@ -156,7 +156,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     /* Global elements multiplication */ 
     /* TODO: replace Waitall with bare Waits */
     MPI_Waitall(sendreqs_count, recv_reqs, MPI_STATUSES_IGNORE);
-    printf("[%d] All requests received!\n", rank);
+    //printf("[%d] All requests received!\n", rank);
 
     int r = 0; /* recv_reqs idx */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
@@ -166,7 +166,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* gather y elements from processes and save it to res */
-    printf("[%d] Gathering results...\n", rank);
+    //printf("[%d] Gathering results...\n", rank);
     MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, row_count, 
                 row_offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
