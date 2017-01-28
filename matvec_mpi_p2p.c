@@ -24,7 +24,7 @@ MPI_Datatype proc_info_type;
 enum tag { REQUEST_TAG, REPLY_TAG };
 
 double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
-                            int *i_idx, int *j_idx, double *values, double *buf_x)
+                            int *buf_i_idx, int *buf_j_idx, double *buf_values, double *buf_x)
 {
     proc_info_t *proc_info; /* info about submatrix; different per process */
     double *res;            /* result of multiplication res = A*x */
@@ -43,12 +43,10 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     /* allocate memory for vectors and submatrixes */
     double *y = (double *)calloc_or_exit( proc_info[rank].row_count, sizeof(double) );
     double *x = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
-    if (rank != MASTER) {
-        i_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
-        j_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
-        values = (double *)malloc_or_exit( proc_info[rank].nz_count * sizeof(double) );
-    }
-    else {
+    int *i_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
+    int *j_idx = (int *)malloc_or_exit( proc_info[rank].nz_count * sizeof(int) );
+    double *values = (double *)malloc_or_exit( proc_info[rank].nz_count * sizeof(double) );
+    if (rank == MASTER) {
         res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
     }
     //debug("[%d] %d %d %d\n", rank, proc_info[rank].N, proc_info[rank].NZ, proc_info[rank].nz_count);
@@ -71,7 +69,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
                 proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* scatter matrix elements to processes */
-    MPI_Scatterv(j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
+    MPI_Scatterv(buf_j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
     
     /* send requests for x elements that are needed and belong to other processes */
@@ -127,7 +125,11 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     //printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
 
     /* notify the processes about the number of requests they should expect */
-    MPI_Allreduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    if (rank == MASTER)
+        MPI_Reduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+    else
+        MPI_Reduce(to_send, to_send, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+    MPI_Scatter(to_send, 1, MPI_INT, &to_send[rank], 1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
     /* reply to requests */
     /* TODO: merge code below loop for overlapping comp with comm */
@@ -139,12 +141,12 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
 
         debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
     }
-    //printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
+    printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
     
     /* scatter j_idx & values to processes */
-    MPI_Scatterv(i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
+    MPI_Scatterv(buf_i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
-    MPI_Scatterv(values, nz_count, nz_offset, MPI_DOUBLE, values, 
+    MPI_Scatterv(buf_values, nz_count, nz_offset, MPI_DOUBLE, values, 
                     proc_info[rank].nz_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
     /* Local elements multiplication */
@@ -155,7 +157,6 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* Global elements multiplication */ 
-    int r = 0; /* recv_reqs idx */
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
         if ( !in_range( j_idx[k], proc_info[rank].row_start_idx, proc_info[rank].row_count) ) {
             MPI_Wait(&recv_reqs[ map[ j_idx[k] ] ], MPI_STATUS_IGNORE);
