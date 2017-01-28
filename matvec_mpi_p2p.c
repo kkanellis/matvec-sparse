@@ -5,7 +5,7 @@
 
 #include "mpi.h"
 
-#undef DEBUG
+//#undef DEBUG
 
 #define MAX_RANDOM_NUM (1<<20)
 #define MASTER 0
@@ -72,11 +72,19 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     MPI_Scatterv(buf_j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
                     proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
     
+    
     /* send requests for x elements that are needed and belong to other processes */
-    int *req_cols = (int *)malloc_or_exit( proc_info[rank].N * sizeof(int) );
-    int *map = (int *)malloc_or_exit( proc_info[rank].N * sizeof(int) );
-    for (int i = 0; i < proc_info[rank].N; i++)  map[i] = -1;
+    int **send_buf = (int **)malloc_or_exit( nprocs * sizeof(int*) );
+    for (int i =0; i < nprocs; i++) {
+        if (i != rank && proc_info[i].row_count > 0)
+            send_buf[i] = (int *)malloc_or_exit( proc_info[i].row_count * sizeof(int) );
+    }
 
+    int *to_send = (int *)calloc_or_exit( nprocs, sizeof(int) );    /* # of req to each proc */
+    char*map = (char *)malloc_or_exit( proc_info[rank].N * sizeof(char) );
+    //for (int i = 0; i < proc_info[rank].N; i++)  map[i] = -1;
+
+    /* build sending blocks to processors */
     int col, sendreqs_count = 0;
     for (int i = 0; i < proc_info[rank].nz_count; i++) {
         col = j_idx[i];
@@ -88,21 +96,8 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         /* check if already request this element */
         if ( map[col] > 0 )
             continue;
-            
-        /* create new request */
-        map[ col ] = sendreqs_count;
-        req_cols[ sendreqs_count ] = col;
-        sendreqs_count++;
-    }
 
-    int * to_send = (int *)calloc( nprocs, sizeof(int) );
-    MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( sendreqs_count * sizeof(MPI_Request) );
-    MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( sendreqs_count * sizeof(MPI_Request) );
-
-    for (int i = 0; i < sendreqs_count; i++) {
-        col = req_cols[i];
-        
-        /* search which process has the element */
+        /* search which process has the element   */
         /* TODO: maybe replace with binary search */
         int dest = -1;
         for (int p = 0; p < nprocs; p++) {
@@ -112,36 +107,78 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
             }
         }
         assert( dest >= 0 );
+
+        send_buf[dest][ to_send[dest] ] = col;
         to_send[dest]++;
-        debug("[%d] Sending request to process %2d \t[%5d]\n", rank, dest, col);
-        
-        /* send the request */
-        MPI_Isend(&req_cols[i], 1, MPI_INT, dest, REQUEST_TAG, 
-                    MPI_COMM_WORLD, &send_reqs[i]);
-        /* recv the message (when it comes) */
-        MPI_Irecv(&x[col], 1, MPI_DOUBLE, dest, REPLY_TAG, 
-                    MPI_COMM_WORLD, &recv_reqs[i]);
+            
+        /* create new request */
+        map[ col ] = 1;
+        sendreqs_count++;
     }
-    //printf("[%d] Sent all requests! [%4d]\n", rank, sendreqs_count);
+
+    /* request storage */
+    MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( nprocs * sizeof(MPI_Request) );
+    MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( nprocs * sizeof(MPI_Request) );
+
+    /* recv blocks storage */
+    double **recv_buf = (double **)malloc_or_exit( nprocs * sizeof(double*) );
+    for (int p =0; p < nprocs; p++) {
+        if (to_send[p] > 0)
+            recv_buf[p] = (double *)malloc_or_exit( to_send[p] * sizeof(double) );
+    }
+
+    /* sending requests to processes in blocks */
+    int req_made = 0;
+    int *expect = (int *)calloc_or_exit( nprocs, sizeof(int) );
+    for (int p = 0; p < nprocs; p++) {
+        if (p == rank || to_send[p] == 0) {
+            send_reqs[p] = recv_reqs[p] = MPI_REQUEST_NULL;
+            continue;
+        }
+
+        debug("[%d] Sending requests to process %2d \t[%5d]\n", rank, p, to_send[p]);
+
+        expect[p] = 1;
+        req_made++;
+
+        /* send the request */
+        MPI_Isend(send_buf[p], to_send[p], MPI_INT, p, REQUEST_TAG, 
+                    MPI_COMM_WORLD, &send_reqs[p]);
+        /* recv the message (when it comes) */
+        MPI_Irecv(recv_buf[p], to_send[p], MPI_DOUBLE, p, REPLY_TAG, 
+                    MPI_COMM_WORLD, &recv_reqs[p]);
+    }
+    printf("[%d] Sent all requests! [%4d]\n", rank, req_made);
 
     /* notify the processes about the number of requests they should expect */
     if (rank == MASTER)
-        MPI_Reduce(MPI_IN_PLACE, to_send, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+        MPI_Reduce(MPI_IN_PLACE, expect, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
     else
-        MPI_Reduce(to_send, to_send, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
-    MPI_Scatter(to_send, 1, MPI_INT, &to_send[rank], 1, MPI_INT, MASTER, MPI_COMM_WORLD);
+        MPI_Reduce(expect, expect, nprocs, MPI_INT, MPI_SUM, MASTER, MPI_COMM_WORLD);
+    MPI_Scatter(expect, 1, MPI_INT, &expect[rank], 1, MPI_INT, MASTER, MPI_COMM_WORLD);
 
-    /* reply to requests */
-    /* TODO: merge code below loop for overlapping comp with comm */
+    /**** reply to requests ****/
+    int *reqs = (int *) malloc_or_exit( proc_info[rank].row_count * sizeof(int) ); 
+    double **rep_buf = (double **)malloc_or_exit( nprocs * sizeof(double*) ); /* reply blocks storage */
+
     MPI_Status status;
-    for (int i = 0; i < to_send[rank]; i++) {
-        /* receive and reply with x[ col ] value */
-        MPI_Recv(&col, 1, MPI_INT, MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
-        MPI_Isend(&x[col], 1, MPI_DOUBLE, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD, &send_reqs[0]);
+    int req_count;
+    for (int p = 0; p < expect[rank]; p++) {
+        /* Wait until a request comes */
+        MPI_Probe(MPI_ANY_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, &status);
+        MPI_Get_count(&status, MPI_INT, &req_count);
+        rep_buf[p] = (double *)malloc_or_exit( req_count * sizeof(double) );
 
-        debug("[%d] Replying request from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, col);
+        /* fill rep_buf[p] with requested x elements */
+        MPI_Recv(reqs, req_count, MPI_INT, status.MPI_SOURCE, REQUEST_TAG, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        for (int i = 0; i < req_count; i++) {
+            rep_buf[p][i] = x[ reqs[i] ];
+        }
+
+        debug("[%d] Replying requests from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, req_count);
+        MPI_Isend(rep_buf[p], req_count, MPI_DOUBLE, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD, &send_reqs[0]);
     }
-    printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
+    //printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
     
     /* scatter j_idx & values to processes */
     MPI_Scatterv(buf_i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
@@ -156,16 +193,27 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         }
     }
 
+    /* wait for all blocks to arrive */
+    int p;
+    printf("[%d] Waiting for %d requests\n", rank, req_made);
+    for (int q = 0; q < req_made; q++) {
+        MPI_Waitany(nprocs, recv_reqs, &p, MPI_STATUS_IGNORE);
+        assert(p != MPI_UNDEFINED);
+
+        /* fill x array with new elements */
+        for (int i = 0; i < to_send[p]; i++) 
+            x[ send_buf[p][i] ] = recv_buf[p][i];
+    }
+
     /* Global elements multiplication */ 
     for (int k = 0 ; k < proc_info[rank].nz_count; k++) {
         if ( !in_range( j_idx[k], proc_info[rank].row_start_idx, proc_info[rank].row_count) ) {
-            MPI_Wait(&recv_reqs[ map[ j_idx[k] ] ], MPI_STATUS_IGNORE);
             y[ i_idx[k] - proc_info[rank].row_start_idx ] += values[k] * x[ j_idx[k] ];
         }
     }
 
     /* gather y elements from processes and save it to res */
-    //printf("[%d] Gathering results...\n", rank);
+    printf("[%d] Gathering results...\n", rank);
     MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, row_count, 
                 row_offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
