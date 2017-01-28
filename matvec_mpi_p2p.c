@@ -5,7 +5,7 @@
 
 #include "mpi.h"
 
-//#undef DEBUG
+#undef DEBUG
 
 #define MAX_RANDOM_NUM (1<<20)
 #define MASTER 0
@@ -15,9 +15,7 @@
 #include "util.h"
 #include "policy.h"
 
-// TODO: replace N sized x vector with rows_count one - need to change global element positions
-// TODO: optimizations - overlap communication with memory allocations & computations
-
+/* Partition policy selection {EQUAL_NZ, EQUAL_ROWS} */
 enum policies policy = EQUAL_NZ;
 MPI_Datatype proc_info_type;
 
@@ -49,8 +47,8 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     if (rank == MASTER) {
         res = (double *)malloc_or_exit( proc_info[rank].N * sizeof(double) );
     }
-    //debug("[%d] %d %d %d\n", rank, proc_info[rank].N, proc_info[rank].NZ, proc_info[rank].nz_count);
     
+    /* process auxilliary arrays for scatterv/gatherv ops */
     if (rank == MASTER) { 
         row_count = (int *)malloc_or_exit( nprocs * sizeof(int) );
         row_offset = (int *)malloc_or_exit( nprocs * sizeof(int) );
@@ -64,42 +62,39 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
             nz_offset[p] = proc_info[p].nz_start_idx;
         }
     }
-    /* scatter x vector to processes */
-    MPI_Scatterv(buf_x, row_count, row_offset, MPI_DOUBLE, &x[ proc_info[rank].row_start_idx ], 
-                proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
-
-    /* scatter matrix elements to processes */
-    MPI_Scatterv(buf_j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
-                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
-    
-    
-    /* send requests for x elements that are needed and belong to other processes */
+        
+    /* allocate buffers for requests sending */
     int **send_buf = (int **)malloc_or_exit( nprocs * sizeof(int*) );
     for (int i =0; i < nprocs; i++) {
         if (i != rank && proc_info[i].row_count > 0)
             send_buf[i] = (int *)malloc_or_exit( proc_info[i].row_count * sizeof(int) );
     }
 
+    /* scatter x vector to processes */
+    MPI_Scatterv(buf_x, row_count, row_offset, MPI_DOUBLE, &x[ proc_info[rank].row_start_idx ], 
+                proc_info[rank].row_count, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
+
+    /* scatter j_idx elements to processes */
+    MPI_Scatterv(buf_j_idx, nz_count, nz_offset, MPI_INT, j_idx, 
+                    proc_info[rank].nz_count, MPI_INT, MASTER, MPI_COMM_WORLD);
+
     int *to_send = (int *)calloc_or_exit( nprocs, sizeof(int) );    /* # of req to each proc */
-    char*map = (char *)malloc_or_exit( proc_info[rank].N * sizeof(char) );
-    //for (int i = 0; i < proc_info[rank].N; i++)  map[i] = -1;
+    char* map = (char *)malloc_or_exit( proc_info[rank].N * sizeof(char) );
 
     /* build sending blocks to processors */
-    int col, sendreqs_count = 0;
+    int dest, col;
     for (int i = 0; i < proc_info[rank].nz_count; i++) {
         col = j_idx[i];
 
-        /* check whether I have the element */
-        if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) ) 
+        /* check whether I need to send a request */
+        if ( in_range(col, proc_info[rank].row_start_idx, proc_info[rank].row_count) ||
+                map[col] > 0) 
             continue;
 
-        /* check if already request this element */
-        if ( map[col] > 0 )
-            continue;
-
-        /* search which process has the element   */
-        /* TODO: maybe replace with binary search */
-        int dest = -1;
+        /* search which process has the element
+         * NOTE: Due to small number or processes, serial search is faster
+         */
+        dest = -1;
         for (int p = 0; p < nprocs; p++) {
             if ( in_range(col, proc_info[p].row_start_idx, proc_info[p].row_count) ) {
                 dest = p;
@@ -108,19 +103,16 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         }
         assert( dest >= 0 );
 
-        send_buf[dest][ to_send[dest] ] = col;
-        to_send[dest]++;
-            
-        /* create new request */
-        map[ col ] = 1;
-        sendreqs_count++;
+        /* insert new request */
+        send_buf[dest][ to_send[dest]++ ] = col;
+        map[col] = 1;
     }
 
-    /* request storage */
+    /* MPI request storage */
     MPI_Request *send_reqs = (MPI_Request*)malloc_or_exit( nprocs * sizeof(MPI_Request) );
     MPI_Request *recv_reqs = (MPI_Request*)malloc_or_exit( nprocs * sizeof(MPI_Request) );
 
-    /* recv blocks storage */
+    /* receiving blocks storage */
     double **recv_buf = (double **)malloc_or_exit( nprocs * sizeof(double*) );
     for (int p =0; p < nprocs; p++) {
         if (to_send[p] > 0)
@@ -131,24 +123,25 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     int req_made = 0;
     int *expect = (int *)calloc_or_exit( nprocs, sizeof(int) );
     for (int p = 0; p < nprocs; p++) {
+        /* need to send to this proc? */
         if (p == rank || to_send[p] == 0) {
             send_reqs[p] = recv_reqs[p] = MPI_REQUEST_NULL;
             continue;
         }
-
         debug("[%d] Sending requests to process %2d \t[%5d]\n", rank, p, to_send[p]);
 
+        /* logistics */
         expect[p] = 1;
         req_made++;
 
         /* send the request */
         MPI_Isend(send_buf[p], to_send[p], MPI_INT, p, REQUEST_TAG, 
                     MPI_COMM_WORLD, &send_reqs[p]);
-        /* recv the message (when it comes) */
+        /* recv the block (when it comes) */
         MPI_Irecv(recv_buf[p], to_send[p], MPI_DOUBLE, p, REPLY_TAG, 
                     MPI_COMM_WORLD, &recv_reqs[p]);
     }
-    printf("[%d] Sent all requests! [%4d]\n", rank, req_made);
+    debug("[%d] Sent all requests! [%4d]\n", rank, req_made);
 
     /* notify the processes about the number of requests they should expect */
     if (rank == MASTER)
@@ -174,11 +167,12 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
         for (int i = 0; i < req_count; i++) {
             rep_buf[p][i] = x[ reqs[i] ];
         }
-
-        debug("[%d] Replying requests from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, req_count);
+        
+        /* send the requested block */
         MPI_Isend(rep_buf[p], req_count, MPI_DOUBLE, status.MPI_SOURCE, REPLY_TAG, MPI_COMM_WORLD, &send_reqs[0]);
+        debug("[%d] Replying requests from process %2d \t[%5d]\n", rank, status.MPI_SOURCE, req_count);
     }
-    //printf("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
+    debug("[%d] Replied to all requests! [%4d]\n", rank, to_send[rank]);
     
     /* scatter j_idx & values to processes */
     MPI_Scatterv(buf_i_idx, nz_count, nz_offset, MPI_INT, i_idx, 
@@ -195,7 +189,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
 
     /* wait for all blocks to arrive */
     int p;
-    printf("[%d] Waiting for %d requests\n", rank, req_made);
+    debug("[%d] Waiting for %d requests\n", rank, req_made);
     for (int q = 0; q < req_made; q++) {
         MPI_Waitany(nprocs, recv_reqs, &p, MPI_STATUS_IGNORE);
         assert(p != MPI_UNDEFINED);
@@ -213,7 +207,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
     }
 
     /* gather y elements from processes and save it to res */
-    printf("[%d] Gathering results...\n", rank);
+    debug("[%d] Gathering results...\n", rank);
     MPI_Gatherv(y, proc_info[rank].row_count, MPI_DOUBLE, res, row_count, 
                 row_offset, MPI_DOUBLE, MASTER, MPI_COMM_WORLD);
 
@@ -226,7 +220,7 @@ double* mat_vec_mult_parallel(int rank, int nprocs, proc_info_t *all_proc_info,
  */
 void create_mpi_datatypes(MPI_Datatype *proc_info_type) {
     MPI_Datatype oldtypes[2];
-    MPI_Aint offsets[2], extent;
+    MPI_Aint offsets[2];
     int blockcounts[2];
 
     /* create `proc_info_t` datatype */
@@ -244,9 +238,6 @@ int main(int argc, char * argv[])
          *out_file = NULL;
 
     double t, comp_time, partition_time;
-
-    double *x; /* vector to be multiplied */
-
     int nprocs,     /* number of tasks/processes */
         rank;       /* id of task/process */
     
@@ -343,9 +334,9 @@ int main(int argc, char * argv[])
     if (rank == MASTER) {
         comp_time = (MPI_Wtime() - t) * 1000.0; 
         printf("[%d] Computation time: %10.3lf ms\n\n", rank, comp_time);
-
         printf("[%d] Total execution time: %10.3lf ms\n", rank, comp_time + partition_time);
         debug("Finished!\n");
+
         if (out_file != NULL) {
             printf("Writing result to '%s'\n", out_file);
 
@@ -381,7 +372,6 @@ int main(int argc, char * argv[])
     /* MPI: end */
     MPI_Finalize();
 
-        
     return 0;
 }
 
