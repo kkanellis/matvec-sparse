@@ -1,4 +1,4 @@
-#include "policy.h"
+#include "partition.h"
 
 /* 
  * Partition non-zero matrix entries to (almost)

@@ -13,7 +13,7 @@
 
 #include "mmio-wrapper.h"
 #include "util.h"
-#include "policy.h"
+#include "partition.h"
 
 /* Partition policy selection {EQUAL_NZ, EQUAL_ROWS} */
 enum policies policy = EQUAL_NZ;

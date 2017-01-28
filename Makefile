@@ -10,7 +10,7 @@ MPI_CFLAGS = -O2 -std=gnu99 -DDEBUG
 LDFLAGS = -lm -lrt
 
 # Object files from libraries
-OBJ = mmio.o mmio-wrapper.o policy.o util.o
+OBJ = mmio.o mmio-wrapper.o partition.o util.o
 
 all: matvec_seq matvec_mpi_p2p matvec_mpi_bcast
 

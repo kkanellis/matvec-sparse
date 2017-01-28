@@ -10,7 +10,7 @@
 
 #include "mmio-wrapper.h"
 #include "util.h"
-#include "policy.h"
+#include "partition.h"
 
 // TODO: replace broadcast with point-to-point for x vector
 
