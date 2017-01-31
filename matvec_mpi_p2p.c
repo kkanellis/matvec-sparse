@@ -7,6 +7,8 @@
 
 #undef DEBUG
 
+#define TOTAL_RUNS 100
+
 #define MAX_RANDOM_NUM (1<<20)
 #define MASTER 0
 #define EPSILON 1e-9
@@ -323,20 +325,41 @@ int main(int argc, char * argv[])
 
         debug("[%d] Partition time: %10.3lf ms\n\n", rank, partition_time);
         debug("[%d] Starting algorithm...\n", rank);
-        t = MPI_Wtime();
     }
 
     /* Matrix-vector multiplication for each processes */
     res = mat_vec_mult_parallel(rank, nprocs, proc_info, buf_i_idx, 
                                 buf_j_idx, buf_values, buf_x);
+    
+    double stdev = 0, mean = 0, runs[TOTAL_RUNS];
+    for (int r = 0; r < TOTAL_RUNS; r++) {
+        MPI_Barrier(MPI_COMM_WORLD);
+        if (rank == MASTER) t = MPI_Wtime();
+        res = mat_vec_mult_parallel(rank, nprocs, proc_info, buf_i_idx, 
+                                buf_j_idx, buf_values, buf_x);
+        //MPI_Barrier(MPI_COMM_WORLD);
+        if (rank == MASTER){
+            runs[r] = (MPI_Wtime() - t) * 1000.0; 
+            mean += runs[r];
+        }
+    }
+
+    /* print execution stats */
+    if (rank == MASTER) {
+        mean /= TOTAL_RUNS; 
+        for (int r = 0; r < TOTAL_RUNS; r++) {
+            stdev += (runs[r] - mean) * (runs[r] - mean);
+        }
+        stdev = sqrt(stdev);
+
+        printf("[%d] Computation time: %10.3lf [%4.3lf] ms\n\n", rank, mean, stdev);
+        printf("[%d] Total execution time: %10.3lf ms\n", rank, mean + partition_time);
+        debug("Finished!\n");
+    }
 
     /* write to output file */
     if (rank == MASTER) {
-        comp_time = (MPI_Wtime() - t) * 1000.0; 
-        printf("[%d] Computation time: %10.3lf ms\n\n", rank, comp_time);
-        printf("[%d] Total execution time: %10.3lf ms\n", rank, comp_time + partition_time);
-        debug("Finished!\n");
-
+        
         if (out_file != NULL) {
             printf("Writing result to '%s'\n", out_file);
 
